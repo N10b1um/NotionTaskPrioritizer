@@ -30,4 +30,4 @@ jobs:
           AI_TOKEN: ${{ secrets.AI_TOKEN }}
           DATABASE_ID: ${{ secrets.DATABASE_ID }}
           CONTEXT_FILE: "context.txt"
-        run: python classifier.py
+        run: python planner.py
