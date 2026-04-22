@@ -94,7 +94,7 @@ def get_ai_response(to_process, done, pending, context):
     """
 
     response = ai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-2.5-flash-lite",
         contents=prompt,
         config={"response_mime_type": "application/json"},
     )
