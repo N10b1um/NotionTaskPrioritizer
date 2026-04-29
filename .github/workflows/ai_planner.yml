@@ -8,7 +8,8 @@ on:
 jobs:
   run-ai-planner:
     runs-on: ubuntu-latest
-
+    env: 
+      TZ: Europe/Minsk
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
