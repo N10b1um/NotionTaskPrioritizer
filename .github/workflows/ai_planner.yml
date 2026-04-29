@@ -30,5 +30,6 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           AI_TOKEN: ${{ secrets.AI_TOKEN }}
           DATABASE_ID: ${{ secrets.DATABASE_ID }}
+          PARENT_ID: ${{ secrets.PARENT_ID }}
           CONTEXT_FILE: "context.txt"
         run: python main.py
