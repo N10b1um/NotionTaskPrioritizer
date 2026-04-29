@@ -1,5 +1,6 @@
 import config
 import logging
+import time
 from utils import load_context
 from notion_api import fetch_tasks, update_task, create_task
 from ai_api import evaluate_tasks
@@ -11,35 +12,37 @@ def main():
     logger.info("Script started")
     context = load_context(config.CONTEXT_FILE)
 
-    to_process = fetch_tasks({"property": "AI_status", "select": {"equals": "To Process"}})
+    pending_tasks = fetch_tasks({"property": "Status", "status": {"does_not_equal": "Done"}})
     done_tasks = fetch_tasks({"property": "Status", "status": {"equals": "Done"}})
-    pending_all = fetch_tasks({"property": "Status", "status": {"does_not_equal": "Done"}})
 
-    to_process_ids = {t["id"] for t in to_process}
-    pending_tasks = [t for t in pending_all if t["id"] not in to_process_ids]
-
-    if not to_process and not pending_tasks and not done_tasks:
-        logger.info("No tasks to process")
+    if not pending_tasks:
+        logger.info("No active tasks to evaluate.")
         return
 
     try:
-        logger.info(f"Evaluating {len(to_process)} tasks...")
-        ai_response = evaluate_tasks(to_process, done_tasks, pending_tasks, context)
+        logger.info(f"Sending {len(pending_tasks)} tasks to AI for massive re-evaluation...")
+        ai_response = evaluate_tasks(pending_tasks, done_tasks, context)
 
         evaluations = ai_response.get("evaluations", {})
-        for idx_str, scores in evaluations.items():
-            idx = int(idx_str)
-            if idx < len(to_process):
-                update_task(to_process[idx]["id"], scores)
-                logger.info(f"Updated: {to_process[idx]['name']}")
+        
+        update_count = 0
+        for task_id, scores in evaluations.items():
+            try:
+                update_task(task_id, scores)
+                update_count += 1
+                time.sleep(0.3) 
+            except Exception as e:
+                logger.warning(f"Failed to update task {task_id}: {e}")
+
+        logger.info(f"Successfully updated priorities for {update_count} tasks.")
 
         new_tasks = ai_response.get("new_tasks", [])
         for nt in new_tasks:
             create_task(nt)
-            logger.info(f"Created new task: {nt.get('name')}")
+            logger.info(f"Created new task from AI: {nt.get('name')}")
 
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Critical Error during AI evaluation: {e}")
 
 if __name__ == "__main__":
     main()
