@@ -1,49 +1,82 @@
 import json
+import logging
 from datetime import datetime
+from typing import List, Dict, Any
 import google.genai as genai
 import config
 
+logger = logging.getLogger(__name__)
 ai_client = genai.Client(api_key=config.AI_TOKEN)
 
-def evaluate_tasks(pending: list, done: list, context: str) -> dict:
-    now = datetime.now()
-    today = now.strftime("%Y-%m-%d")
-    day_of_week = now.strftime("%A")
-    current_hour = now.hour
+def _format_pending_task(t: Dict[str, Any]) -> str:
+    """Formats a single task for the AI prompt."""
+    dead_str = f" | Deadline: {t['deadline']}" if t.get('deadline') else ""
+    metrics = f"Imp: {t['importance']}, Urg: {t['urgency']}, Score: {t['score']}, Efforts: {t['efforts']}"
     
-    pending_str = ""
-    for t in pending:
-        dead_str = f", Deadline: {t['deadline']}" if t['deadline'] else ""
-        pending_str += f"- ID: {t['id']}\n  Name: {t['name']}\n  Efforts: {t['efforts']}{dead_str}\n  Desc: {t['desc']}\n\n"
+    parts = [
+        f"- ID: {t['id']}",
+        f"  Name: {t['name']}",
+        f"  Desc: {t['desc']}",
+        f"  Current State: {metrics}{dead_str}"
+    ]
+    if t.get('ai_comment'):
+        parts.append(f"  Last AI advice: {t['ai_comment']}")
+    
+    return "\n".join(parts) + "\n\n"
 
-    done_str = "\n".join([f"- {t['name']}" for t in done[:15]])
+def _normalize_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensures all keys in the dictionary are lowercase for consistent processing."""
+    return {k.lower(): v for k, v in data.items()}
+
+def evaluate_tasks(pending: List[Dict[str, Any]], done: List[Dict[str, Any]], context: str) -> Dict[str, Any]:
+    """Sends tasks to Gemini for re-evaluation and potential new task generation."""
+    now = datetime.now()
+    
+    pending_str = "".join(_format_pending_task(t) for t in pending)
+    done_str = "\n".join(f"- {t['name']}" for t in done[:15]) or "None"
 
     full_system_instruction = f"""
     {context}
     
-    CRITICAL LOGIC:
-    - Priority Formula: (Priority = Importance * 8 + Urgency * 4 - Efforts).
-    - Tiers: Tier 1 (USA/Math/Eng) > Tier 2 (FTC/ML/Startup) > Tier 3 (School noise).
-    
-    RESPONSE STRUCTURE:
-    You MUST return a JSON OBJECT with two keys: 
-    1. "evaluations": an object where keys are Notion Task IDs.
-    2. "new_tasks": an array of objects.
-    
-    MENTORSHIP STYLE:
-    Your 'reason' must be a tactical advice (1-2 sentences) in Russian.
-    - Mention the 2.5h commute for light tasks.
-    - Suggest skipping/faking Tier 3.
-    - If current_hour > 21, prioritize sleep.
+    STRICT RESPONSE SCHEMA EXAMPLE:
+    {{
+      "evaluations": {{
+        "34a37d3d-c5b7-8034-b9c2-d9386b6173d4": {{
+          "importance": 10,
+          "urgency": 8,
+          "efforts": 5,
+          "score": 95,
+          "reason": "This is a Tier 1 task. Do it in the morning while your brain is fresh. Focus on the core logic."
+        }}
+      }},
+      "new_tasks": [
+        {{
+          "name": "Vocabulary Review",
+          "description": "30 words from the SAT list",
+          "importance": 9,
+          "urgency": 5,
+          "efforts": 2,
+          "score": 80,
+          "reason": "Perfect for your commute. Use the resource from https://example.com"
+        }}
+      ]
+    }}
+
+    CRITICAL RULES:
+    1. Return ONLY the JSON object. No extra text.
+    2. Use the exact Notion IDs provided in the prompt as keys for "evaluations".
+    3. The 'reason' field must be in English, tactical, and concise.
     """
 
     user_query = f"""
-    DATE: {today} ({day_of_week}), TIME: {current_hour}:00
-    RECENTLY DONE: {done_str if done_str else "None"}
-    PENDING TASKS:
+    CURRENT DATE: {now.strftime("%Y-%m-%d")} ({now.strftime("%A")}), TIME: {now.strftime("%H:%M")}
+    RECENTLY COMPLETED TASKS:
+    {done_str}
+    
+    TASKS TO EVALUATE:
     {pending_str}
     
-    TASK: Re-evaluate everything. Return strictly the JSON object.
+    ACTION: Re-evaluate the tasks and return the JSON following the SCHEMA EXAMPLE.
     """
 
     response = ai_client.models.generate_content(
@@ -56,27 +89,22 @@ def evaluate_tasks(pending: list, done: list, context: str) -> dict:
     )
     
     try:
-        raw_text = response.text.strip()
-        if raw_text.startswith("```json"):
-            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-            
-        data = json.loads(raw_text)
+        text = response.text.strip()
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1:
+            text = text[start:end+1]
         
-        if isinstance(data, list):
-            formatted_evals = {}
-            for item in data:
-                task_id = item.get("id") or item.get("ID")
-                if task_id:
-                    formatted_evals[task_id] = {
-                        "importance": item.get("importance", 5),
-                        "urgency": item.get("urgency", 5),
-                        "efforts": item.get("efforts", 5),
-                        "reason": item.get("reason", "No reason provided")
-                    }
-            return {"evaluations": formatted_evals, "new_tasks": []}
+        data = json.loads(text)
+        
+        if isinstance(data, dict):
+            evals = {k: _normalize_keys(v) for k, v in data.get("evaluations", {}).items()}
+            new_tasks = [_normalize_keys(t) for t in data.get("new_tasks", [])]
+            return {"evaluations": evals, "new_tasks": new_tasks}
             
-        return data
+        return {"evaluations": {}, "new_tasks": []}
 
     except Exception as e:
-        print(f"Error parsing AI response: {e}")
+        logger.exception("Error parsing AI response")
+        logger.debug(f"Raw response: {response.text}")
         return {"evaluations": {}, "new_tasks": []}
